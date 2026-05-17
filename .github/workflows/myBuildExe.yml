@@ -1,0 +1,113 @@
+name: dashakh Build Windows Only
+
+on:
+  workflow_dispatch:      # دستی اجرا شود
+    inputs:
+      version:
+        description: 'نسخه برای نام‌گذاری فایل (اختیاری)'
+        required: false
+        type: string
+        default: 'dev'
+
+  # اگر بخواهی روی هر push به main هم بیلد بشه (اختیاری):
+  # push:
+  #   branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-x86_64-gnu
+
+      - name: Install MSYS2 MinGW (برای linker)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Configure linker
+        shell: pwsh
+        run: |
+          $gcc = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe" -replace '\\','/'
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE/.cargo | Out-Null
+          Add-Content -Path $env:USERPROFILE/.cargo/config.toml -Value '[target.x86_64-pc-windows-gnu]'
+          Add-Content -Path $env:USERPROFILE/.cargo/config.toml -Value "linker = '$gcc'"
+
+      - name: Build CLI (Release)
+        run: cargo build --release --target x86_64-pc-windows-gnu --bin mhrv-rs
+
+      - name: Build UI (Release)
+        run: cargo build --release --target x86_64-pc-windows-gnu --features ui --bin mhrv-rs-ui
+
+      - name: Prepare artifacts
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version || 'dev' }}"
+          $outdir = "dist"
+          New-Item -ItemType Directory -Force -Path $outdir | Out-Null
+          
+          Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs.exe" -Destination "$outdir/mhrv-rs.exe"
+          Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs-ui.exe" -Destination "$outdir/mhrv-rs-ui.exe" -ErrorAction SilentlyContinue
+          
+          # کپی launcher
+          Copy-Item "assets/launchers/run.bat" -Destination "$outdir/run.bat" -ErrorAction SilentlyContinue
+          
+          # ساخت ZIP نهایی
+          Compress-Archive -Path "$outdir/*" -DestinationPath "mhrv-rs-windows-x86_64-v$ver.zip" -Force
+
+
+      - name: Copy files to releases/ folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path releases | Out-Null
+          
+          # حذف فایل‌های قدیمی
+          Remove-Item releases/mhrv-rs*.exe, releases/run.bat -ErrorAction SilentlyContinue
+          
+          # کپی فایل‌های جدید
+          Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs.exe" -Destination "releases/mhrv-rs.exe"
+          Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs-ui.exe" -Destination "releases/mhrv-rs-ui.exe"
+          Copy-Item "assets/launchers/run.bat" -Destination "releases/run.bat" -ErrorAction SilentlyContinue
+
+      - name: Commit and Push to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          git add releases/
+          
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          
+          git commit -m "chore(releases): update Windows executables"
+          git push origin HEAD:main
+          
+
+      - name: Upload Windows Executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: mhrv-rs-windows
+          path: |
+            mhrv-rs-windows-x86_64-*.zip
+            dist/mhrv-rs.exe
+            dist/mhrv-rs-ui.exe
+          if-no-files-found: error
