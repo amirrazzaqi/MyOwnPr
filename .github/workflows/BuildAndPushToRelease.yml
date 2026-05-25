@@ -1,0 +1,89 @@
+name: Build exe and push to Release
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'نسخه (مثال: 1.9.19-no-full)'
+        required: true
+        type: string
+      draft:
+        description: 'به صورت Draft منتشر شود؟'
+        required: false
+        type: boolean
+        default: true
+      prerelease:
+        description: 'به عنوان Pre-release منتشر شود؟'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install MSYS2 MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc
+
+      - name: Configure Linker
+        shell: pwsh
+        run: |
+          $gcc = "${{ steps.msys2.outputs.msys2-location }}\mingw64\bin\gcc.exe" -replace '\\','/'
+          New-Item -ItemType Directory -Force -Path "$env:USERPROFILE/.cargo" | Out-Null
+          @"
+          [target.x86_64-pc-windows-gnu]
+          linker = '$gcc'
+          "@ | Out-File -FilePath "$env:USERPROFILE/.cargo/config.toml" -Encoding utf8 -Append
+
+      - name: Build CLI
+        run: cargo build --release --target x86_64-pc-windows-gnu --bin mhrv-rs
+
+      - name: Build UI
+        run: cargo build --release --target x86_64-pc-windows-gnu --features ui --bin mhrv-rs-ui
+
+      - name: Prepare Files
+        shell: pwsh
+        run: |
+          $ver = "${{ inputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          
+          Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs.exe" -Destination "dist/mhrv-rs.exe"
+          if (Test-Path "target/x86_64-pc-windows-gnu/release/mhrv-rs-ui.exe") {
+            Copy-Item "target/x86_64-pc-windows-gnu/release/mhrv-rs-ui.exe" -Destination "dist/mhrv-rs-ui.exe"
+          }
+          Copy-Item "assets/launchers/run.bat" -Destination "dist/run.bat" -ErrorAction SilentlyContinue
+          
+          Compress-Archive -Path "dist/*" -DestinationPath "mhrv-rs-windows-x86_64-v$ver-no-full-tunnel.zip" -Force
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }} - بدون Full Tunnel
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          files: mhrv-rs-windows-x86_64-v${{ inputs.version }}-no-full-tunnel.zip
+          body: |
+            ### تغییرات این نسخه
+            - حالت Full Tunnel کاملاً حذف شد.
+            - فقط حالت AppsScript و Direct موجود است.
+            
+            **ساخت خودکار با GitHub Actions**
